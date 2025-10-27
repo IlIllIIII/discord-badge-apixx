@@ -93,7 +93,7 @@ function decodeFlags(raw) {
   return found;
 }
 
-// Function to estimate Nitro subscription based on account age and features
+// SIMPLE Nitro detection - if they have Nitro features, show Bronze by default
 function estimateNitroBadge(userData) {
   const hasNitroFeatures = Boolean(
     (userData.avatar && typeof userData.avatar === 'string' && userData.avatar.startsWith('a_')) ||
@@ -107,41 +107,13 @@ function estimateNitroBadge(userData) {
     return null;
   }
 
-  // If we have premium_type, use that as definitive Nitro status
-  if (userData.premium_type > 0) {
-    const accountCreated = new Date(userData.id / 4194304 + 1420070400000); // Discord snowflake timestamp
-    const now = new Date();
-    const diffTime = Math.abs(now - accountCreated);
-    const diffMonths = Math.floor(diffTime / (1000 * 60 * 60 * 24 * 30));
-
-    // Find the highest badge the user qualifies for based on account age
-    const badgeMonths = Object.keys(NITRO_BADGES).map(Number).sort((a, b) => b - a);
-    for (const months of badgeMonths) {
-      if (diffMonths >= months) {
-        return {
-          badge: NITRO_BADGES[months],
-          months: diffMonths,
-          estimated: true,
-          reason: "Based on account age and premium_type"
-        };
-      }
-    }
-
-    // Default to Bronze if they have Nitro but account is new
-    return {
-      badge: "Bronze (1 Month)",
-      months: 1,
-      estimated: true,
-      reason: "New Nitro subscriber"
-    };
-  }
-
-  // Fallback: if they have Nitro features but no premium_type, assume they've had it for a while
+  // SIMPLE FIX: Always return Bronze for users with Nitro features
+  // Since we can't know their exact subscription date without guild data
   return {
-    badge: "Gold (6 Months)",
-    months: 6,
+    badge: "Bronze (1 Month)",
+    months: 1,
     estimated: true,
-    reason: "Based on Nitro features"
+    reason: "Nitro subscriber - showing default Bronze badge"
   };
 }
 
@@ -199,8 +171,8 @@ app.get("/user/:id", async (req, res) => {
       global_name: data.global_name ?? null,
       badges,
       likelyNitro: hasNitroFeatures,
-      nitroBadge: nitroBadge, // Detailed nitro badge info
-      premium_type: data.premium_type || 0, // 0 = none, 1 = classic, 2 = full
+      nitroBadge: nitroBadge,
+      premium_type: data.premium_type || 0,
       avatar_url: data.avatar ? `https://cdn.discordapp.com/avatars/${data.id}/${data.avatar}.png?size=512` : null,
       banner_url: data.banner ? `https://cdn.discordapp.com/banners/${data.id}/${data.banner}.png?size=600` : null,
       raw_public_flags: data.public_flags ?? 0
@@ -248,7 +220,6 @@ app.get("/user/:id/nitro", async (req, res) => {
       estimated: nitroBadge.estimated,
       reason: nitroBadge.reason,
       premium_type: data.premium_type || 0,
-      nextMilestone: getNextMilestone(nitroBadge.months),
       allMilestones: NITRO_BADGES
     });
   } catch (err) {
@@ -256,20 +227,5 @@ app.get("/user/:id/nitro", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
-// Helper function to get next milestone
-function getNextMilestone(currentMonths) {
-  const milestones = Object.keys(NITRO_BADGES).map(Number).sort((a, b) => a - b);
-  for (const months of milestones) {
-    if (currentMonths < months) {
-      return {
-        monthsRequired: months,
-        badge: NITRO_BADGES[months],
-        monthsToGo: months - currentMonths
-      };
-    }
-  }
-  return null;
-}
 
 app.listen(PORT, () => console.log(`🚀 Server listening on port ${PORT}`));
