@@ -1,0 +1,14 @@
+{
+  "name": "discord-badge-api",
+  "version": "1.0.0",
+  "description": "Simple API to fetch Discord badges and infer Nitro status",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2"
+  }
+}
