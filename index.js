@@ -93,28 +93,66 @@ function decodeFlags(raw) {
   return found;
 }
 
-// SIMPLE Nitro detection - if they have Nitro features, show Bronze by default
-function estimateNitroBadge(userData) {
-  const hasNitroFeatures = Boolean(
-    (userData.avatar && typeof userData.avatar === 'string' && userData.avatar.startsWith('a_')) ||
-    userData.banner ||
-    userData.avatar_decoration ||
-    userData.avatar_decoration_data ||
-    userData.premium_type > 0
-  );
-
-  if (!hasNitroFeatures) {
-    return null;
+// Function to calculate Nitro badge based on premium_since timestamp
+function getNitroBadgeFromPremiumSince(premiumSince) {
+  if (!premiumSince) return null;
+  
+  const premiumStart = new Date(premiumSince);
+  const now = new Date();
+  const diffTime = Math.abs(now - premiumStart);
+  const diffMonths = Math.floor(diffTime / (1000 * 60 * 60 * 24 * 30)); // Approximate months
+  
+  console.log(`Nitro subscription: ${diffMonths} months since ${premiumStart}`);
+  
+  // Find the highest badge the user qualifies for
+  const badgeMonths = Object.keys(NITRO_BADGES).map(Number).sort((a, b) => b - a);
+  for (const months of badgeMonths) {
+    if (diffMonths >= months) {
+      return {
+        badge: NITRO_BADGES[months],
+        months: diffMonths,
+        started: premiumSince,
+        exact: true
+      };
+    }
   }
+  
+  // If less than 1 month but has premium
+  if (diffMonths < 1) {
+    return {
+      badge: "Bronze (1 Month)",
+      months: diffMonths,
+      started: premiumSince,
+      exact: true
+    };
+  }
+  
+  return null;
+}
 
-  // SIMPLE FIX: Always return Bronze for users with Nitro features
-  // Since we can't know their exact subscription date without guild data
-  return {
-    badge: "Bronze (1 Month)",
-    months: 1,
-    estimated: true,
-    reason: "Nitro subscriber - showing default Bronze badge"
-  };
+// Function to check multiple guilds for premium_since data
+async function getPremiumSinceFromGuilds(userId, botToken) {
+  const guildsToCheck = process.env.GUILD_IDS ? process.env.GUILD_IDS.split(',') : [];
+  
+  for (const guildId of guildsToCheck) {
+    try {
+      const response = await fetch(`https://discord.com/api/v10/guilds/${guildId}/members/${userId}`, {
+        headers: { Authorization: `Bot ${botToken}` }
+      });
+      
+      if (response.ok) {
+        const memberData = await response.json();
+        if (memberData.premium_since) {
+          console.log(`Found premium_since for ${userId} in guild ${guildId}: ${memberData.premium_since}`);
+          return memberData.premium_since;
+        }
+      }
+    } catch (error) {
+      console.warn(`Failed to check guild ${guildId} for user ${userId}:`, error.message);
+    }
+  }
+  
+  return null;
 }
 
 // root
@@ -133,31 +171,47 @@ app.get("/user/:id", async (req, res) => {
   }
 
   try {
-    const response = await fetch(`https://discord.com/api/v10/users/${userId}`, {
+    // Get user data first
+    const userResponse = await fetch(`https://discord.com/api/v10/users/${userId}`, {
       headers: { Authorization: `Bot ${BOT_TOKEN}` }
     });
 
-    if (!response.ok) {
-      const text = await response.text();
-      return res.status(response.status).json({ error: "Discord API error", detail: text });
+    if (!userResponse.ok) {
+      const text = await userResponse.text();
+      return res.status(userResponse.status).json({ error: "Discord API error", detail: text });
     }
 
-    const data = await response.json();
+    const userData = await userResponse.json();
 
     // decode public_flags (could be a number or null)
-    const badges = decodeFlags(data.public_flags ?? 0);
+    const badges = decodeFlags(userData.public_flags ?? 0);
 
-    // Get Nitro badge info
-    const nitroBadge = estimateNitroBadge(data);
-    
+    // Try to get premium_since from guilds
+    let premiumSince = await getPremiumSinceFromGuilds(userId, BOT_TOKEN);
+    let nitroBadge = null;
+
     // Check for Nitro features
     const hasNitroFeatures = Boolean(
-      (data.avatar && typeof data.avatar === 'string' && data.avatar.startsWith('a_')) ||
-      data.banner ||
-      data.avatar_decoration ||
-      data.avatar_decoration_data ||
-      data.premium_type > 0
+      (userData.avatar && typeof userData.avatar === 'string' && userData.avatar.startsWith('a_')) ||
+      userData.banner ||
+      userData.avatar_decoration ||
+      userData.avatar_decoration_data ||
+      userData.premium_type > 0
     );
+
+    // If we have premium_since, calculate exact badge
+    if (premiumSince) {
+      nitroBadge = getNitroBadgeFromPremiumSince(premiumSince);
+    } 
+    // If no premium_since but has Nitro features, show default Bronze
+    else if (hasNitroFeatures) {
+      nitroBadge = {
+        badge: "Bronze (1 Month)",
+        months: 1,
+        estimated: true,
+        reason: "Nitro detected but subscription date unknown"
+      };
+    }
 
     // Add Nitro badge to badges array if available
     if (nitroBadge && !badges.includes(nitroBadge.badge)) {
@@ -165,17 +219,18 @@ app.get("/user/:id", async (req, res) => {
     }
 
     res.json({
-      id: data.id,
-      username: data.username,
-      discriminator: data.discriminator,
-      global_name: data.global_name ?? null,
+      id: userData.id,
+      username: userData.username,
+      discriminator: userData.discriminator,
+      global_name: userData.global_name ?? null,
       badges,
       likelyNitro: hasNitroFeatures,
       nitroBadge: nitroBadge,
-      premium_type: data.premium_type || 0,
-      avatar_url: data.avatar ? `https://cdn.discordapp.com/avatars/${data.id}/${data.avatar}.png?size=512` : null,
-      banner_url: data.banner ? `https://cdn.discordapp.com/banners/${data.id}/${data.banner}.png?size=600` : null,
-      raw_public_flags: data.public_flags ?? 0
+      premium_type: userData.premium_type || 0,
+      premium_since: premiumSince,
+      avatar_url: userData.avatar ? `https://cdn.discordapp.com/avatars/${userData.id}/${userData.avatar}.png?size=512` : null,
+      banner_url: userData.banner ? `https://cdn.discordapp.com/banners/${userData.id}/${userData.banner}.png?size=600` : null,
+      raw_public_flags: userData.public_flags ?? 0
     });
   } catch (err) {
     console.error(err);
@@ -194,22 +249,22 @@ app.get("/user/:id/nitro", async (req, res) => {
   }
 
   try {
-    const response = await fetch(`https://discord.com/api/v10/users/${userId}`, {
-      headers: { Authorization: `Bot ${BOT_TOKEN}` }
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      return res.status(response.status).json({ error: "Discord API error", detail: text });
+    // Try to get premium_since from guilds
+    const premiumSince = await getPremiumSinceFromGuilds(userId, BOT_TOKEN);
+    
+    if (!premiumSince) {
+      return res.json({
+        hasNitro: false,
+        message: "Cannot determine Nitro subscription - user not found in any monitored guilds"
+      });
     }
 
-    const data = await response.json();
-    const nitroBadge = estimateNitroBadge(data);
+    const nitroBadge = getNitroBadgeFromPremiumSince(premiumSince);
     
     if (!nitroBadge) {
       return res.json({
         hasNitro: false,
-        message: "User does not have Nitro or Nitro features were not detected"
+        message: "User does not have an active Nitro subscription"
       });
     }
 
@@ -217,9 +272,9 @@ app.get("/user/:id/nitro", async (req, res) => {
       hasNitro: true,
       badge: nitroBadge.badge,
       monthsSubscribed: nitroBadge.months,
-      estimated: nitroBadge.estimated,
-      reason: nitroBadge.reason,
-      premium_type: data.premium_type || 0,
+      subscriptionStart: nitroBadge.started,
+      exact: nitroBadge.exact,
+      nextMilestone: getNextMilestone(nitroBadge.months),
       allMilestones: NITRO_BADGES
     });
   } catch (err) {
@@ -227,5 +282,20 @@ app.get("/user/:id/nitro", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
+// Helper function to get next milestone
+function getNextMilestone(currentMonths) {
+  const milestones = Object.keys(NITRO_BADGES).map(Number).sort((a, b) => a - b);
+  for (const months of milestones) {
+    if (currentMonths < months) {
+      return {
+        monthsRequired: months,
+        badge: NITRO_BADGES[months],
+        monthsToGo: months - currentMonths
+      };
+    }
+  }
+  return null;
+}
 
 app.listen(PORT, () => console.log(`🚀 Server listening on port ${PORT}`));
