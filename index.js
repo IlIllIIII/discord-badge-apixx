@@ -11,6 +11,7 @@ if (!BOT_TOKEN) {
   console.warn("⚠️ BOT_TOKEN is not set. Set BOT_TOKEN env var before running.");
 }
 
+// Full list of known Discord user flags & values (as of current API docs)
 const USER_FLAGS = {
   STAFF: 1 << 0,                     // 1
   PARTNER: 1 << 1,                   // 2
@@ -259,15 +260,75 @@ async function getGuildMemberData(userId, botToken) {
   return null;
 }
 
+// IMPROVED: Better Nitro detection function
+function detectNitroStatus(userData, guildMemberData) {
+  const nitroFeatures = [];
+  
+  // Check for animated avatar (gif)
+  if (userData.avatar && userData.avatar.startsWith('a_')) {
+    nitroFeatures.push("Animated Avatar");
+  }
+  
+  // Check for profile banner
+  if (userData.banner) {
+    nitroFeatures.push("Profile Banner");
+  }
+  
+  // Check for avatar decorations
+  if (userData.avatar_decoration) {
+    nitroFeatures.push("Avatar Decoration");
+  }
+  
+  // Check for avatar decoration data
+  if (userData.avatar_decoration_data) {
+    nitroFeatures.push("Avatar Decoration Data");
+  }
+  
+  // Check premium type (0 = none, 1 = nitro classic, 2 = nitro, 3 = nitro basic)
+  const hasPremiumType = userData.premium_type > 0;
+  if (hasPremiumType) {
+    nitroFeatures.push(`Premium Type: ${userData.premium_type}`);
+  }
+  
+  // Check premium_since from guilds
+  const hasPremiumSince = Boolean(guildMemberData?.premium_since);
+  if (hasPremiumSince) {
+    nitroFeatures.push("Premium Since (from guild)");
+  }
+  
+  // Calculate confidence score
+  const confidenceScore = nitroFeatures.length;
+  const hasNitro = confidenceScore >= 2; // At least 2 nitro features
+  
+  console.log(`Nitro detection for ${userData.id}:`, {
+    features: nitroFeatures,
+    confidence: confidenceScore,
+    determined: hasNitro
+  });
+  
+  return {
+    has_nitro: hasNitro,
+    confidence: confidenceScore,
+    features_found: nitroFeatures,
+    premium_type: userData.premium_type || 0,
+    premium_since: guildMemberData?.premium_since || null
+  };
+}
+
 // Function to detect missing items compared to typical premium accounts
-function detectMissingItems(userData, nitroBadge, isBooster, badges) {
+function detectMissingItems(userData, nitroBadge, isBooster, badges, nitroDetection) {
   const missing = [];
   
   // Check for common premium features
   if (!userData.banner) missing.push("Profile Banner");
   if (!userData.avatar_decoration) missing.push("Avatar Decoration");
   if (!userData.bio) missing.push("Profile Bio");
-  if (userData.premium_type === 0) missing.push("Nitro Subscription");
+  if (userData.premium_type === 0) missing.push("Nitro Subscription (API)");
+  
+  // Check nitro detection confidence
+  if (nitroDetection.confidence < 2) {
+    missing.push("Strong Nitro Evidence");
+  }
   
   // Check for common badges that might be missing
   const commonBadges = ["Early Supporter", "Active Developer", "Bug Hunter Level 1", "Bug Hunter Level 2"];
@@ -275,7 +336,7 @@ function detectMissingItems(userData, nitroBadge, isBooster, badges) {
   if (!hasCommonBadge) missing.push("Common Badges");
   
   // Check nitro status
-  if (!nitroBadge && !userData.premium_type) {
+  if (!nitroBadge && !nitroDetection.has_nitro) {
     missing.push("Nitro Badge");
   }
   
@@ -334,28 +395,23 @@ app.get("/user/:id", async (req, res) => {
     let premiumSince = guildMemberData?.premium_since || null;
     let nitroBadge = null;
 
-    // Check for Nitro features - IMPROVED DETECTION
-    const hasNitroFeatures = Boolean(
-      (userData.avatar && userData.avatar.startsWith('a_')) || // Animated avatar
-      userData.banner || // Profile banner
-      userData.avatar_decoration || // Avatar decorations
-      userData.avatar_decoration_data || // Avatar decoration data
-      userData.premium_type > 0 || // Premium type
-      premiumSince // Premium since from guilds
-    );
+    // IMPROVED: Use better nitro detection
+    const nitroDetection = detectNitroStatus(userData, guildMemberData);
 
     // If we have premium_since, calculate exact badge
     if (premiumSince) {
       nitroBadge = getNitroBadgeFromPremiumSince(premiumSince);
     } 
-    // If no premium_since but has Nitro features, show default Bronze
-    else if (hasNitroFeatures) {
+    // If no premium_since but nitro detected, show estimated badge
+    else if (nitroDetection.has_nitro) {
       nitroBadge = {
         badge: "Bronze (1 Month)",
         tier: "Bronze",
         months: 1,
         estimated: true,
-        reason: "Nitro features detected but subscription date unknown"
+        reason: "Nitro features detected but subscription date unknown",
+        confidence: nitroDetection.confidence,
+        features: nitroDetection.features_found
       };
     }
 
@@ -368,7 +424,7 @@ app.get("/user/:id", async (req, res) => {
     const isBooster = Boolean(guildMemberData?.is_booster);
 
     // Detect missing items
-    const missingItems = detectMissingItems(userData, nitroBadge, isBooster, badges);
+    const missingItems = detectMissingItems(userData, nitroBadge, isBooster, badges, nitroDetection);
 
     const result = {
       id: userData.id,
@@ -379,14 +435,17 @@ app.get("/user/:id", async (req, res) => {
       badges: badges,
       badge_count: badges.length,
       nitro: {
-        has_nitro: hasNitroFeatures || Boolean(nitroBadge),
+        has_nitro: nitroDetection.has_nitro || Boolean(nitroBadge),
         badge: nitroBadge?.badge || null,
         tier: nitroBadge?.tier || null,
         months_subscribed: nitroBadge?.months || 0,
         subscription_start: nitroBadge?.started || null,
         exact: nitroBadge?.exact || false,
         estimated: nitroBadge?.estimated || false,
-        premium_type: userData.premium_type || 0
+        confidence: nitroDetection.confidence,
+        features_detected: nitroDetection.features_found,
+        premium_type: userData.premium_type || 0,
+        raw_detection: nitroDetection
       },
       booster: {
         is_booster: isBooster,
@@ -413,7 +472,5 @@ app.get("/user/:id", async (req, res) => {
     res.status(500).json(errorResult);
   }
 });
-
-// Additional endpoints (nitro, booster) with webhook logging...
 
 app.listen(PORT, () => console.log(`🚀 Server listening on port ${PORT}`));
