@@ -11,7 +11,6 @@ if (!BOT_TOKEN) {
   console.warn("⚠️ BOT_TOKEN is not set. Set BOT_TOKEN env var before running.");
 }
 
-// Full list of known Discord user flags & values (as of current API docs)
 const USER_FLAGS = {
   STAFF: 1 << 0,                     // 1
   PARTNER: 1 << 1,                   // 2
