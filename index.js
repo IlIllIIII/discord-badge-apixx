@@ -110,6 +110,7 @@ function getNitroBadgeFromPremiumSince(premiumSince) {
     if (diffMonths >= months) {
       return {
         badge: NITRO_BADGES[months],
+        tier: getTierFromBadge(NITRO_BADGES[months]),
         months: diffMonths,
         started: premiumSince,
         exact: true
@@ -121,6 +122,7 @@ function getNitroBadgeFromPremiumSince(premiumSince) {
   if (diffMonths < 1) {
     return {
       badge: "Bronze (1 Month)",
+      tier: "Bronze",
       months: diffMonths,
       started: premiumSince,
       exact: true
@@ -130,8 +132,14 @@ function getNitroBadgeFromPremiumSince(premiumSince) {
   return null;
 }
 
-// Function to check multiple guilds for premium_since data
-async function getPremiumSinceFromGuilds(userId, botToken) {
+// Function to extract tier from badge name
+function getTierFromBadge(badgeName) {
+  const tierMatch = badgeName.match(/^(Bronze|Silver|Gold|Platinum|Diamond|Emerald|Ruby|Opal)/);
+  return tierMatch ? tierMatch[1] : "Unknown";
+}
+
+// Function to check multiple guilds for premium_since and booster data
+async function getGuildMemberData(userId, botToken) {
   const guildsToCheck = process.env.GUILD_IDS ? process.env.GUILD_IDS.split(',') : [];
   
   for (const guildId of guildsToCheck) {
@@ -142,9 +150,22 @@ async function getPremiumSinceFromGuilds(userId, botToken) {
       
       if (response.ok) {
         const memberData = await response.json();
+        const result = {};
+        
         if (memberData.premium_since) {
           console.log(`Found premium_since for ${userId} in guild ${guildId}: ${memberData.premium_since}`);
-          return memberData.premium_since;
+          result.premium_since = memberData.premium_since;
+        }
+        
+        // Check if user is boosting this server
+        if (memberData.premium_since) {
+          result.is_booster = true;
+          result.boosting_since = memberData.premium_since;
+          result.boosting_guild = guildId;
+        }
+        
+        if (Object.keys(result).length > 0) {
+          return result;
         }
       }
     } catch (error) {
@@ -186,8 +207,9 @@ app.get("/user/:id", async (req, res) => {
     // decode public_flags (could be a number or null)
     const badges = decodeFlags(userData.public_flags ?? 0);
 
-    // Try to get premium_since from guilds
-    let premiumSince = await getPremiumSinceFromGuilds(userId, BOT_TOKEN);
+    // Try to get guild member data (premium_since and booster info)
+    const guildMemberData = await getGuildMemberData(userId, BOT_TOKEN);
+    let premiumSince = guildMemberData?.premium_since || null;
     let nitroBadge = null;
 
     // Check for Nitro features
@@ -207,6 +229,7 @@ app.get("/user/:id", async (req, res) => {
     else if (hasNitroFeatures) {
       nitroBadge = {
         badge: "Bronze (1 Month)",
+        tier: "Bronze",
         months: 1,
         estimated: true,
         reason: "Nitro detected but subscription date unknown"
@@ -218,18 +241,36 @@ app.get("/user/:id", async (req, res) => {
       badges.push(nitroBadge.badge);
     }
 
+    // Check booster status
+    const isBooster = Boolean(guildMemberData?.is_booster);
+
     res.json({
       id: userData.id,
       username: userData.username,
       discriminator: userData.discriminator,
       global_name: userData.global_name ?? null,
-      badges,
-      likelyNitro: hasNitroFeatures,
-      nitroBadge: nitroBadge,
-      premium_type: userData.premium_type || 0,
+      bio: userData.bio || null, // User's bio/profile description
+      badges: badges,
+      badge_count: badges.length,
+      nitro: {
+        has_nitro: hasNitroFeatures || Boolean(nitroBadge),
+        badge: nitroBadge?.badge || null,
+        tier: nitroBadge?.tier || null,
+        months_subscribed: nitroBadge?.months || 0,
+        subscription_start: nitroBadge?.started || null,
+        exact: nitroBadge?.exact || false,
+        estimated: nitroBadge?.estimated || false,
+        premium_type: userData.premium_type || 0
+      },
+      booster: {
+        is_booster: isBooster,
+        boosting_since: guildMemberData?.boosting_since || null,
+        boosting_guild: guildMemberData?.boosting_guild || null
+      },
       premium_since: premiumSince,
       avatar_url: userData.avatar ? `https://cdn.discordapp.com/avatars/${userData.id}/${userData.avatar}.png?size=512` : null,
       banner_url: userData.banner ? `https://cdn.discordapp.com/banners/${userData.id}/${userData.banner}.png?size=600` : null,
+      bio: userData.bio || null, // User's bio
       raw_public_flags: userData.public_flags ?? 0
     });
   } catch (err) {
@@ -249,8 +290,9 @@ app.get("/user/:id/nitro", async (req, res) => {
   }
 
   try {
-    // Try to get premium_since from guilds
-    const premiumSince = await getPremiumSinceFromGuilds(userId, BOT_TOKEN);
+    // Try to get guild member data
+    const guildMemberData = await getGuildMemberData(userId, BOT_TOKEN);
+    const premiumSince = guildMemberData?.premium_since || null;
     
     if (!premiumSince) {
       return res.json({
@@ -271,11 +313,45 @@ app.get("/user/:id/nitro", async (req, res) => {
     res.json({
       hasNitro: true,
       badge: nitroBadge.badge,
+      tier: nitroBadge.tier,
       monthsSubscribed: nitroBadge.months,
       subscriptionStart: nitroBadge.started,
       exact: nitroBadge.exact,
       nextMilestone: getNextMilestone(nitroBadge.months),
       allMilestones: NITRO_BADGES
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// New endpoint to get booster information
+app.get("/user/:id/booster", async (req, res) => {
+  const userId = req.params.id;
+  if (!/^\d+$/.test(userId)) {
+    return res.status(400).json({ error: "Invalid user id" });
+  }
+  if (!BOT_TOKEN) {
+    return res.status(500).json({ error: "BOT_TOKEN not configured on server" });
+  }
+
+  try {
+    const guildMemberData = await getGuildMemberData(userId, BOT_TOKEN);
+    
+    if (!guildMemberData?.is_booster) {
+      return res.json({
+        is_booster: false,
+        message: "User is not boosting any monitored servers"
+      });
+    }
+
+    res.json({
+      is_booster: true,
+      boosting_since: guildMemberData.boosting_since,
+      boosting_guild: guildMemberData.boosting_guild,
+      duration_months: guildMemberData.boosting_since ? 
+        Math.floor((new Date() - new Date(guildMemberData.boosting_since)) / (1000 * 60 * 60 * 24 * 30)) : 0
     });
   } catch (err) {
     console.error(err);
@@ -291,6 +367,7 @@ function getNextMilestone(currentMonths) {
       return {
         monthsRequired: months,
         badge: NITRO_BADGES[months],
+        tier: getTierFromBadge(NITRO_BADGES[months]),
         monthsToGo: months - currentMonths
       };
     }
