@@ -5,7 +5,7 @@ import dotenv from "dotenv";
 // Load environment variables
 dotenv.config();
 
-const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
+const BOT_TOKEN = process.env.BOT_TOKEN;
 const PORT = process.env.PORT || 10000;
 
 if (!DISCORD_BOT_TOKEN) {
@@ -44,7 +44,7 @@ app.get("/check-nitro/:userId", async (req, res) => {
   }
 });
 
-client.login(DISCORD_BOT_TOKEN);
+client.login(BOT_TOKEN);
 
 app.listen(PORT, () => {
   console.log(`API running on port ${PORT}`);
