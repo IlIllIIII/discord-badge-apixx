@@ -8,7 +8,7 @@ dotenv.config();
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const PORT = process.env.PORT || 10000;
 
-if (!DISCORD_BOT_TOKEN) {
+if (!BOT_TOKEN) {
   console.error("Error: DISCORD_BOT_TOKEN is not defined!");
   process.exit(1);
 }
