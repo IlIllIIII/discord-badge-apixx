@@ -1,14 +1,15 @@
 {
-  "name": "discord-badge-api",
+  "name": "discord-nitro-api",
   "version": "1.0.0",
-  "description": "Simple API to fetch Discord badges and infer Nitro status",
-  "main": "index.js",
+  "description": "API to check if a Discord user has Nitro",
+  "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "node-fetch": "^3.3.2"
+    "discord.js": "^14.14.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2"
   }
 }
